@@ -83,6 +83,10 @@ function Base.get!(func::Base.Callable, cache::MultiThreadedCache{K,V}, key) whe
             # from the shared base_cache.
             @lock cache.base_cache_lock begin
                 cache.base_cache[key] = v
+                # We no longer need the Future, since all future requests will see the key
+                # in the base_cache. (Other Tasks may still hold a reference, but it will
+                # be GC'd once they have all completed.)
+                delete!(cache.base_cache_futures, key)
             end
             # Return v to any other Tasks that were blocking on this key.
             put!(future, v)

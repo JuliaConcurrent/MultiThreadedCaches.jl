@@ -27,6 +27,9 @@ using Test
             end == 10
         end
     end
+
+    # Internals test:
+    @test length(cache.base_cache_futures) == 0
 end
 
 # Helper function for stress-test: returns true if all elements in iterable `v` are equal.
@@ -64,6 +67,9 @@ end
         close(ch)
         @test all_equal(collect(ch))
     end
+
+    # Internals test:
+    @test length(cache.base_cache_futures) == 0
 end
 
 
