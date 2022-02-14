@@ -20,7 +20,7 @@ using Test
     end == 10
 
     # Even on different threads, the cache should still have a value for key `1`.
-    @sync for i in 1:100
+    @sync for _ in 1:100
         Threads.@spawn begin
             @test get!(cache, 1) do
                 return 100
@@ -50,7 +50,7 @@ end
     len = 100
     outputs = [Channel{Int}(Inf) for _ in 1:len]
 
-    @sync for i in 1:100_000
+    @sync for _ in 1:100_000
         Threads.@spawn begin
             key = rand(1:len)
             value = get!(cache, len) do
@@ -83,6 +83,48 @@ end
     # New keys use the newly provided value:
     @test get!(()->10, cache, 3) == 10
 end
+
+@testset "exceptions" begin
+    cache = MultiThreadedCache{Int64, Int64}()
+    init_cache!(cache)
+
+    # Test that if the construction Task throws an exception, all Tasks see that exception:
+    exceptions = Channel(Inf)
+    @sync for i in 1:1000
+        Threads.@spawn begin
+            try
+                get!(cache, 1) do
+                    sleep(1)  # sleep, to give all Tasks time to spin up
+                    throw(ArgumentError("$i"))
+                end
+            catch e
+                @test e isa ArgumentError
+                put!(exceptions, e)
+            end
+        end
+    end
+
+    # Test that all Tasks saw the same exception thrown.
+    close(exceptions)
+    @test all_equal(collect(exceptions))
+
+    # Test that after throwing an exception during a get! function, the cache is still
+    # robust and working as intended.
+
+    @test get!(()->10, cache, 1) == 10
+    @test get!(()->20, cache, 1) == 10
+
+    # Internals test:
+    # (despite the exception, all futures are closed, and the base cache only contains
+    # expected values.)
+    @test length(cache.base_cache_futures) == 0
+    @test cache.base_cache == Dict(1=>10)
+end
+
+
+
+
+
 
 
 
