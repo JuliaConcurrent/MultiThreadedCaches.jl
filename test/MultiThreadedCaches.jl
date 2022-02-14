@@ -53,7 +53,7 @@ end
     @sync for i in 1:100_000
         Threads.@spawn begin
             key = rand(1:len)
-            value = get!(cache, len) do
+            value = get!(cache, key) do
                 # Randomize a value for (key,value) the *first time* it's requested
                 rand(Int)
             end
@@ -84,5 +84,81 @@ end
     @test get!(()->10, cache, 3) == 10
 end
 
+
+
+# ---------------------------------------------------------------
+# What follows is a benchmark, testing that scaling the number of threads (increasing
+# contention on the cache) doesn't negatively affect performance:
+
+@testset "perf-benchmark" begin
+    cache = MultiThreadedCache{Int,Int}()
+    init_cache!(cache)
+
+    len = 100
+    outputs = [Channel{Int}(Inf) for _ in 1:len]
+
+    run_serial(N) = @sync for _ in 1:N
+        begin
+            key = rand(1:len)
+            value = get!(cache, key) do
+                # Randomize a value for (key,value) the *first time* it's requested
+                rand(Int)
+            end
+            # Every subsequent get!() on the cache should see the exact same value,
+            # even if requested in parallel from multiple threads.
+            put!(outputs[key], value)
+        end
+    end
+
+    run_parallel(N) = @sync for _ in 1:N
+        Threads.@spawn begin
+            key = rand(1:len)
+            value = get!(cache, key) do
+                # Randomize a value for (key,value) the *first time* it's requested
+                rand(Int)
+            end
+            # Every subsequent get!() on the cache should see the exact same value,
+            # even if requested in parallel from multiple threads.
+            put!(outputs[key], value)
+        end
+    end
+
+    # Measure a baseline against a dict with a lock
+    mutex = ReentrantLock()
+    dict = Dict{Int,Int}()
+    baseline_outputs = [Channel{Int}(Inf) for _ in 1:len]
+    run_baseline(N) = @sync for _ in 1:N
+        Threads.@spawn begin
+            key = rand(1:len)
+            Base.@lock mutex begin
+                value = get!(dict, key) do
+                    rand(Int)
+                end
+                put!(baseline_outputs[key], value)
+            end
+        end
+    end
+
+    # warmup
+    run_serial(10); run_parallel(10); run_baseline(10)
+
+    # measurement
+    n = 100_000
+    time_serial = @elapsed run_serial(n)
+    time_parallel = @elapsed run_parallel(n)
+    time_baseline = @elapsed run_baseline(n)
+
+    for ch in outputs
+        close(ch)
+        @test all_equal(collect(ch))
+    end
+    for ch in baseline_outputs
+        close(ch)
+        @test all_equal(collect(ch))
+    end
+
+    # Performance test:
+    @info "benchmark results" Threads.nthreads() time_serial time_parallel time_baseline
+end
 
 
