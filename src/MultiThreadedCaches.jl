@@ -131,7 +131,27 @@ function Base.get!(func::Base.Callable, cache::MultiThreadedCache{K,V}, key) whe
             end
         end
         if is_first_task
-            v = func()
+            v = try
+                func()
+            catch e
+                # In the case of an exception, we abort the current computation of this
+                # key/value pair, and throw the exception onto the future, so that all
+                # pending tasks will see the exeption as well.
+                #
+                # NOTE: we could also cache the exception and throw it from now on, but this
+                # would make interactive development difficult, since once you fix the
+                # error, you'd have to clear out your cache. So instead, we just rethrow the
+                # exception and don't cache anything, so that you can fix the exception and
+                # continue on. (This means that throwing exceptions remains expensive.)
+
+                # close(::Channel, ::Exception) requires an Exception object, so if the user
+                # threw a non-Exception, we convert it to one, here.
+                e isa Exception || (e = ErrorException("Non-exception object thrown during get!(): $e"))
+                close(future, e)
+                # As below, the future isn't needed after this returns (see below).
+                delete!(cache.base_cache_futures, key)
+                rethrow(e)
+            end
             # Finally, lock again for a *constant time* to insert the computed value into
             # the shared cache, so that we can free the Channel and future gets can read
             # from the shared base_cache.
