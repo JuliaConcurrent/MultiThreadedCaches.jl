@@ -4,6 +4,45 @@ using Base: @lock
 
 export MultiThreadedCache, init_cache!
 
+"""
+    MultiThreadedCache{K,V}()
+    MultiThreadedCache{K,V}([initial_kv_values])
+
+`MultiThreadedCache{K,V}()` constructs a fast, thread-safe cache.
+
+This cache stores k=>v pairs that cache a deterministic computation. The only API into the
+cache is `get!()`: you can look up a key, and if it is not available, you can produce a
+value which will be added to the cache.
+
+Accesses to the cache will look first in the per-thread cache, and then fall back to the
+shared thread-safe cache. Concurrent misses to the same key in the shared cache will
+coordinate, so that only one Task will perform the compuatation for that value, and the
+other Task(s) will block.
+
+# Examples:
+```julia
+julia> cache = MultiThreadedCache{Int, Int}(Dict(1=>2, 2=>3))
+MultiThreadedCache{Int64, Int64}(Dict(2 => 3, 1 => 2))
+
+julia> init_cache!(cache)
+MultiThreadedCache{Int64, Int64}(Dict(2 => 3, 1 => 2))
+
+julia> get!(cache, 2) do
+           2+1
+       end
+3
+
+julia> get!(cache, 5) do
+           5+1
+       end
+6
+
+julia> get!(cache, 5) do
+           5+10
+       end
+6
+```
+"""
 struct MultiThreadedCache{K,V}
     thread_caches::Vector{Dict{K,V}}
 
@@ -12,9 +51,14 @@ struct MultiThreadedCache{K,V}
     base_cache_futures::Dict{K,Channel{V}}  # Guarded by: base_cache_lock
 
     function MultiThreadedCache{K,V}() where {K,V}
+        base_cache = Dict{K,V}()
+
+        return MultiThreadedCache{K,V}(base_cache)
+    end
+
+    function MultiThreadedCache{K,V}(base_cache::Dict) where {K,V}
         thread_caches = Dict{K,V}[]
 
-        base_cache = Dict{K,V}()
         base_cache_lock = ReentrantLock()
         base_cache_futures = Dict{K,Channel{V}}()
 
@@ -27,11 +71,21 @@ end
 
 This function must be called inside a Module's `__init__()` method, to ensure that the
 number of threads are set *at runtime, not precompilation time*.
+
+!!! note
+NOTE: This function is *not thread safe*, it must not be called concurrently with any other
+code that touches the cache. This should only be called once, during module initialization.
 """
 function init_cache!(cache::MultiThreadedCache{K,V}) where {K,V}
     append!(empty!(cache.thread_caches),
-        Dict{K,V}[Dict{K,V}() for _ in 1:Threads.nthreads()])
-    return nothing
+        # We copy the base cache to all the thread caches, so that any precomputed values
+        # can be shared without having to wait for a cache miss.
+        Dict{K,V}[copy(cache.base_cache) for _ in 1:Threads.nthreads()])
+    return cache
+end
+
+function Base.show(io::IO, cache::MultiThreadedCache{K,V}) where {K,V}
+    print(io, "$(MultiThreadedCache{K,V})(", cache.base_cache, ")")
 end
 
 # Based upon the thread-safe Global RNG implementation in the Random stdlib:
@@ -48,7 +102,7 @@ function _thread_cache(cache::MultiThreadedCache)
     end
     return cache
 end
-@noinline _thread_cache_length_assert() = @assert false "length(cache.thread_caches) < Threads.nthreads() - Must call `init_cache!(cache)` in Module __init__()."
+@noinline _thread_cache_length_assert() = @assert false "** Must call `init_cache!(cache)` in your Module's __init__()! - length(cache.thread_caches) < Threads.nthreads() "
 
 
 const CACHE_MISS = :__MultiThreadedCaches_key_not_found__

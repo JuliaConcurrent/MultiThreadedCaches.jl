@@ -72,5 +72,17 @@ end
     @test length(cache.base_cache_futures) == 0
 end
 
+@testset "constructors" begin
+    # Constructing with precomputed cache key/value pairs:
+    cache = MultiThreadedCache{Int64, Int64}(Dict(2 => 3, 1 => 2))
+    init_cache!(cache)
+
+    # Existing keys use the cached value:
+    @test get!(()->10, cache, 1) == 2
+    @test get!(()->10, cache, 2) == 3
+    # New keys use the newly provided value:
+    @test get!(()->10, cache, 3) == 10
+end
+
 
 
