@@ -77,10 +77,10 @@ NOTE: This function is *not thread safe*, it must not be called concurrently wit
 code that touches the cache. This should only be called once, during module initialization.
 """
 function init_cache!(cache::MultiThreadedCache{K,V}) where {K,V}
-    append!(empty!(cache.thread_caches),
-        # We copy the base cache to all the thread caches, so that any precomputed values
-        # can be shared without having to wait for a cache miss.
-        Dict{K,V}[copy(cache.base_cache) for _ in 1:Threads.nthreads()])
+    # Statically resize the vector, but wait to lazily create the dictionaries when
+    # requested, so that the object will be allocated on the thread that will consume it.
+    # (This follows the guidance from Julia Base.)
+    resize!(cache.thread_caches, Threads.nthreads())
     return cache
 end
 
@@ -91,14 +91,16 @@ end
 # Based upon the thread-safe Global RNG implementation in the Random stdlib:
 # https://github.com/JuliaLang/julia/blob/e4fcdf5b04fd9751ce48b0afc700330475b42443/stdlib/Random/src/RNGs.jl#L369-L385
 # Get or lazily construct the per-thread cache when first requested.
-function _thread_cache(cache::MultiThreadedCache)
-    length(cache.thread_caches) >= Threads.nthreads() || _thread_cache_length_assert()
+function _thread_cache(mtcache::MultiThreadedCache)
+    length(mtcache.thread_caches) >= Threads.nthreads() || _thread_cache_length_assert()
     tid = Threads.threadid()
-    if @inbounds isassigned(cache.thread_caches, tid)
-        @inbounds cache = cache.thread_caches[tid]
+    if @inbounds isassigned(mtcache.thread_caches, tid)
+        @inbounds cache = mtcache.thread_caches[tid]
     else
-        cache = eltype(cache.thread_caches)()
-        @inbounds cache.thread_caches[tid] = cache
+        # We copy the base cache to all the thread caches, so that any precomputed values
+        # can be shared without having to wait for a cache miss.
+        cache = copy(mtcache.base_cache)
+        @inbounds mtcache.thread_caches[tid] = cache
     end
     return cache
 end
