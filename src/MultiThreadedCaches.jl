@@ -45,6 +45,7 @@ julia> get!(cache, 5) do
 """
 struct MultiThreadedCache{K,V}
     thread_caches::Vector{Dict{K,V}}
+    thread_locks::Vector{ReentrantLock}
 
     base_cache::Dict{K,V}  # Guarded by: base_cache_lock
     base_cache_lock::ReentrantLock
@@ -58,11 +59,12 @@ struct MultiThreadedCache{K,V}
 
     function MultiThreadedCache{K,V}(base_cache::Dict) where {K,V}
         thread_caches = Dict{K,V}[]
+        thread_locks = ReentrantLock[]
 
         base_cache_lock = ReentrantLock()
         base_cache_futures = Dict{K,Channel{V}}()
 
-        return new(thread_caches, base_cache, base_cache_lock, base_cache_futures)
+        return new(thread_caches, thread_locks, base_cache, base_cache_lock, base_cache_futures)
     end
 end
 
@@ -81,6 +83,7 @@ function init_cache!(cache::MultiThreadedCache{K,V}) where {K,V}
     # requested, so that the object will be allocated on the thread that will consume it.
     # (This follows the guidance from Julia Base.)
     resize!(cache.thread_caches, Threads.nthreads())
+    resize!(cache.thread_locks, Threads.nthreads())
     return cache
 end
 
@@ -91,9 +94,8 @@ end
 # Based upon the thread-safe Global RNG implementation in the Random stdlib:
 # https://github.com/JuliaLang/julia/blob/e4fcdf5b04fd9751ce48b0afc700330475b42443/stdlib/Random/src/RNGs.jl#L369-L385
 # Get or lazily construct the per-thread cache when first requested.
-function _thread_cache(mtcache::MultiThreadedCache)
+function _thread_cache(mtcache::MultiThreadedCache, tid)
     length(mtcache.thread_caches) >= Threads.nthreads() || _thread_cache_length_assert()
-    tid = Threads.threadid()
     if @inbounds isassigned(mtcache.thread_caches, tid)
         @inbounds cache = mtcache.thread_caches[tid]
     else
@@ -105,26 +107,56 @@ function _thread_cache(mtcache::MultiThreadedCache)
     return cache
 end
 @noinline _thread_cache_length_assert() = @assert false "** Must call `init_cache!(cache)` in your Module's __init__()! - length(cache.thread_caches) < Threads.nthreads() "
+function _thread_lock(cache::MultiThreadedCache, tid)
+    length(cache.thread_locks) >= Threads.nthreads() || _thread_cache_length_assert()
+    if @inbounds isassigned(cache.thread_locks, tid)
+        @inbounds lock = cache.thread_locks[tid]
+    else
+        lock = eltype(cache.thread_locks)()
+        @inbounds cache.thread_locks[tid] = lock
+    end
+    return lock
+end
+@noinline _thread_cache_length_assert() = @assert false "** Must call `init_cache!(cache)` in your Module's __init__()! - length(cache.thread_caches) < Threads.nthreads() "
 
 
 const CACHE_MISS = :__MultiThreadedCaches_key_not_found__
 
 function Base.get!(func::Base.Callable, cache::MultiThreadedCache{K,V}, key) where {K,V}
     # If the thread-local cache has the value, we can return immediately.
-    thread_local_cached_value_or_miss = get(_thread_cache(cache), key, CACHE_MISS)
-    if thread_local_cached_value_or_miss !== CACHE_MISS
-        return thread_local_cached_value_or_miss::V
+    # We store tcache in a local variable, so that even if the Task migrates Threads, we are
+    # still operating on the same initial cache object.
+    tid = Threads.threadid()
+    tcache = _thread_cache(cache, tid)
+    tlock = _thread_lock(cache, tid)
+    # We have to lock during access to the thread-local dict, because it's possible that the
+    # Task may migrate to another thread by the end, and we really might be mutating the
+    # dict in parallel. But most of the time this lock should have 0 contention, since it's
+    # only held during get() and set!().
+    Base.@lock tlock begin
+        thread_local_cached_value_or_miss = get(tcache, key, CACHE_MISS)
+        if thread_local_cached_value_or_miss !== CACHE_MISS
+            return thread_local_cached_value_or_miss::V
+        end
     end
     # If not, we need to check the base cache.
     # When we're done, call this function to set the result
-    function _store_result!(v::V)
+    @inline function _store_result!(v::V; test_haskey::Bool)
         # Set the value into thread-local cache for the supplied key.
         # Note that we must perform two separate get() and setindex!() calls, for
         # concurrency-safety, in case the dict has been mutated by another task in between.
         # TODO: For 100% concurrency-safety, we maybe want to lock around the get() above
         # and the setindex!() here.. it's probably fine without it, but needs considering.
         # Currently this is relying on get() and setindex!() having no yields.
-        setindex!(_thread_cache(cache), key, v)
+        Base.@lock tlock begin
+            if test_haskey
+                if !haskey(tcache, key)
+                    setindex!(tcache, key, v)
+                end
+            else
+                setindex!(tcache, key, v)
+            end
+        end
     end
 
     # Even though we're using Thread-local caches, we still need to lock during
@@ -181,7 +213,7 @@ function Base.get!(func::Base.Callable, cache::MultiThreadedCache{K,V}, key) whe
             delete!(cache.base_cache_futures, key)
         end
         # Store the result in this thread-local dictionary.
-        _store_result!(v)
+        _store_result!(v, test_haskey=false)
         # Return v to any other Tasks that were blocking on this key.
         put!(future, v)
         return v
@@ -189,10 +221,9 @@ function Base.get!(func::Base.Callable, cache::MultiThreadedCache{K,V}, key) whe
         # Block on the future until the first task that asked for this key finishes
         # computing a value for it.
         v = fetch(future)
-        if !haskey(_thread_cache(cache), key)
-            # Store the result in this thread-local dictionary.
-            _store_result!(v)
-        end
+        # Store the result in our original thread-local cache (if another Task hasn't) set
+        # it already.
+        _store_result!(v, test_haskey=true)
         return v
     end
 end
