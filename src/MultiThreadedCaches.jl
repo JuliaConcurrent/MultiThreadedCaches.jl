@@ -111,69 +111,89 @@ const CACHE_MISS = :__MultiThreadedCaches_key_not_found__
 
 function Base.get!(func::Base.Callable, cache::MultiThreadedCache{K,V}, key) where {K,V}
     # If the thread-local cache has the value, we can return immediately.
+    thread_local_cached_value_or_miss = get(_thread_cache(cache), key, CACHE_MISS)
+    if thread_local_cached_value_or_miss !== CACHE_MISS
+        return thread_local_cached_value_or_miss::V
+    end
     # If not, we need to check the base cache.
-    return get!(_thread_cache(cache), key) do
-        # Even though we're using Thread-local caches, we still need to lock during
-        # construction to prevent multiple tasks redundantly constructing the same object,
-        # and potential thread safety violations due to Tasks migrating threads.
-        # NOTE that we only grab the lock if the key doesn't exist, so the mutex contention
-        # is not on the critical path for most accessses. :)
-        is_first_task = false
-        local future  # used only if the base_cache doesn't have the key
-        # We lock the mutex, but for only a short, *constant time* duration, to grab the
-        # future for this key, or to create the future if it doesn't exist.
-        @lock cache.base_cache_lock begin
-            value_or_miss = get(cache.base_cache, key, CACHE_MISS)
-            if value_or_miss !== CACHE_MISS
-                return value_or_miss::V
-            end
-            future = get!(cache.base_cache_futures, key) do
-                is_first_task = true
-                Channel{V}(1)
-            end
-        end
-        if is_first_task
-            v = try
-                func()
-            catch e
-                # In the case of an exception, we abort the current computation of this
-                # key/value pair, and throw the exception onto the future, so that all
-                # pending tasks will see the exeption as well.
-                #
-                # NOTE: we could also cache the exception and throw it from now on, but this
-                # would make interactive development difficult, since once you fix the
-                # error, you'd have to clear out your cache. So instead, we just rethrow the
-                # exception and don't cache anything, so that you can fix the exception and
-                # continue on. (This means that throwing exceptions remains expensive.)
+    # When we're done, call this function to set the result
+    function _store_result!(v::V)
+        # Set the value into thread-local cache for the supplied key.
+        # Note that we must perform two separate get() and setindex!() calls, for
+        # concurrency-safety, in case the dict has been mutated by another task in between.
+        # TODO: For 100% concurrency-safety, we maybe want to lock around the get() above
+        # and the setindex!() here.. it's probably fine without it, but needs considering.
+        # Currently this is relying on get() and setindex!() having no yields.
+        setindex!(_thread_cache(cache), key, v)
+    end
 
-                # close(::Channel, ::Exception) requires an Exception object, so if the user
-                # threw a non-Exception, we convert it to one, here.
-                e isa Exception || (e = ErrorException("Non-exception object thrown during get!(): $e"))
-                close(future, e)
-                # As below, the future isn't needed after this returns (see below).
-                @lock cache.base_cache_lock begin
-                    delete!(cache.base_cache_futures, key)
-                end
-                rethrow(e)
-            end
-            # Finally, lock again for a *constant time* to insert the computed value into
-            # the shared cache, so that we can free the Channel and future gets can read
-            # from the shared base_cache.
+    # Even though we're using Thread-local caches, we still need to lock during
+    # construction to prevent multiple tasks redundantly constructing the same object,
+    # and potential thread safety violations due to Tasks migrating threads.
+    # NOTE that we only grab the lock if the key doesn't exist, so the mutex contention
+    # is not on the critical path for most accessses. :)
+    is_first_task = false
+    local future  # used only if the base_cache doesn't have the key
+    # We lock the mutex, but for only a short, *constant time* duration, to grab the
+    # future for this key, or to create the future if it doesn't exist.
+    @lock cache.base_cache_lock begin
+        value_or_miss = get(cache.base_cache, key, CACHE_MISS)
+        if value_or_miss !== CACHE_MISS
+            return value_or_miss::V
+        end
+        future = get!(cache.base_cache_futures, key) do
+            is_first_task = true
+            Channel{V}(1)
+        end
+    end
+    if is_first_task
+        v = try
+            func()
+        catch e
+            # In the case of an exception, we abort the current computation of this
+            # key/value pair, and throw the exception onto the future, so that all
+            # pending tasks will see the exeption as well.
+            #
+            # NOTE: we could also cache the exception and throw it from now on, but this
+            # would make interactive development difficult, since once you fix the
+            # error, you'd have to clear out your cache. So instead, we just rethrow the
+            # exception and don't cache anything, so that you can fix the exception and
+            # continue on. (This means that throwing exceptions remains expensive.)
+
+            # close(::Channel, ::Exception) requires an Exception object, so if the user
+            # threw a non-Exception, we convert it to one, here.
+            e isa Exception || (e = ErrorException("Non-exception object thrown during get!(): $e"))
+            close(future, e)
+            # As below, the future isn't needed after this returns (see below).
             @lock cache.base_cache_lock begin
-                cache.base_cache[key] = v
-                # We no longer need the Future, since all future requests will see the key
-                # in the base_cache. (Other Tasks may still hold a reference, but it will
-                # be GC'd once they have all completed.)
                 delete!(cache.base_cache_futures, key)
             end
-            # Return v to any other Tasks that were blocking on this key.
-            put!(future, v)
-            return v
-        else
-            # Block on the future until the first task that asked for this key finishes
-            # computing a value for it.
-            return fetch(future)
+            rethrow(e)
         end
+        # Finally, lock again for a *constant time* to insert the computed value into
+        # the shared cache, so that we can free the Channel and future gets can read
+        # from the shared base_cache.
+        @lock cache.base_cache_lock begin
+            cache.base_cache[key] = v
+            # We no longer need the Future, since all future requests will see the key
+            # in the base_cache. (Other Tasks may still hold a reference, but it will
+            # be GC'd once they have all completed.)
+            delete!(cache.base_cache_futures, key)
+        end
+        # Store the result in this thread-local dictionary.
+        _store_result!(v)
+        # Return v to any other Tasks that were blocking on this key.
+        put!(future, v)
+        return v
+    else
+        # Block on the future until the first task that asked for this key finishes
+        # computing a value for it.
+        v = fetch(future)
+        if !haskey(_thread_cache(cache), key)
+            # Store the result in this thread-local dictionary.
+            _store_result!(v)
+        end
+        return v
     end
 end
 
