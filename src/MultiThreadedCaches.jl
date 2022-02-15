@@ -151,7 +151,9 @@ function Base.get!(func::Base.Callable, cache::MultiThreadedCache{K,V}, key) whe
                 e isa Exception || (e = ErrorException("Non-exception object thrown during get!(): $e"))
                 close(future, e)
                 # As below, the future isn't needed after this returns (see below).
-                delete!(cache.base_cache_futures, key)
+                @lock cache.base_cache_lock begin
+                    delete!(cache.base_cache_futures, key)
+                end
                 rethrow(e)
             end
             # Finally, lock again for a *constant time* to insert the computed value into
