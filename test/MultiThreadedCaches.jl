@@ -123,7 +123,9 @@ end
 
 @testset "show" begin
     cache = MultiThreadedCache{Int64, Int64}()
+    # Exercise both show functions
     show(cache)
+    display(cache)
 end
 
 

@@ -92,13 +92,36 @@ function Base.show(io::IO, cache::MultiThreadedCache{K,V}) where {K,V}
     # for an arbitrarily long time. Instead, print the data to an intermediate buffer first.
     # Note that this has the same CPU complexity, since printing is already O(n).
     iobuf = IOBuffer()
-    Base.@lock cache.base_cache_lock begin
-        print(iobuf, "$(MultiThreadedCache{K,V})(", cache.base_cache, ")")
+    let io = IOContext(iobuf, io)
+        Base.@lock cache.base_cache_lock begin
+            _oneline_show(io, cache)
+        end
     end
     # Now print the data without holding the lock.
     seekstart(iobuf)
     write(io, read(iobuf))
-    nothing
+    return nothing
+end
+_oneline_show(io::IO, cache::MultiThreadedCache{K,V}) where {K,V} =
+    print(io, "$(MultiThreadedCache{K,V})(", cache.base_cache, ")")
+
+function Base.show(io::IO, mime::MIME"text/plain", cache::MultiThreadedCache{K,V}) where {K,V}
+    # Contention optimization: don't hold the lock while printing. See above for more info.
+    iobuf = IOBuffer()
+    let io = IOContext(iobuf, io)
+        Base.@lock cache.base_cache_lock begin
+            if isempty(cache.base_cache)
+                _oneline_show(io, cache)
+            else
+                print(io, "$(MultiThreadedCache): ")
+                Base.show(io, mime, cache.base_cache)
+            end
+        end
+    end
+    # Now print the data without holding the lock.
+    seekstart(iobuf)
+    write(io, read(iobuf))
+    return nothing
 end
 
 # Based upon the thread-safe Global RNG implementation in the Random stdlib:
