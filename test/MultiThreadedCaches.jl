@@ -31,6 +31,20 @@ using Test
     # Internals test:
     @test length(cache.base_cache_futures) == 0
 end
+@testset "KV types" begin
+    cache = MultiThreadedCache{Int,String}()
+    init_cache!(cache)
+
+    @test get!(()->"hi", cache, 1) == "hi"
+    @test get!(()->"bye", cache, 1) == "hi"
+
+    cache = MultiThreadedCache{Any,Any}()
+    init_cache!(cache)
+
+    @test get!(()->"hi", cache, 1) == "hi"
+    @test get!(()->2.0, cache, 1) == "hi"
+    @test get!(()->3.0, cache, 1.0) == "hi"
+end
 
 # Helper function for stress-test: returns true if all elements in iterable `v` are equal.
 function all_equal(v)
@@ -121,6 +135,12 @@ end
     @test cache.base_cache == Dict(1=>10)
 end
 
+@testset "show" begin
+    cache = MultiThreadedCache{Int64, Int64}()
+    # Exercise both show functions
+    show(cache)
+    display(cache)
+end
 
 
 

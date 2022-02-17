@@ -88,7 +88,40 @@ function init_cache!(cache::MultiThreadedCache{K,V}) where {K,V}
 end
 
 function Base.show(io::IO, cache::MultiThreadedCache{K,V}) where {K,V}
+    # Contention optimization: don't hold the lock while printing, since that could block
+    # for an arbitrarily long time. Instead, print the data to an intermediate buffer first.
+    # Note that this has the same CPU complexity, since printing is already O(n).
+    iobuf = IOBuffer()
+    let io = IOContext(iobuf, io)
+        Base.@lock cache.base_cache_lock begin
+            _oneline_show(io, cache)
+        end
+    end
+    # Now print the data without holding the lock.
+    seekstart(iobuf)
+    write(io, read(iobuf))
+    return nothing
+end
+_oneline_show(io::IO, cache::MultiThreadedCache{K,V}) where {K,V} =
     print(io, "$(MultiThreadedCache{K,V})(", cache.base_cache, ")")
+
+function Base.show(io::IO, mime::MIME"text/plain", cache::MultiThreadedCache{K,V}) where {K,V}
+    # Contention optimization: don't hold the lock while printing. See above for more info.
+    iobuf = IOBuffer()
+    let io = IOContext(iobuf, io)
+        Base.@lock cache.base_cache_lock begin
+            if isempty(cache.base_cache)
+                _oneline_show(io, cache)
+            else
+                print(io, "$(MultiThreadedCache): ")
+                Base.show(io, mime, cache.base_cache)
+            end
+        end
+    end
+    # Now print the data without holding the lock.
+    seekstart(iobuf)
+    write(io, read(iobuf))
+    return nothing
 end
 
 # Based upon the thread-safe Global RNG implementation in the Random stdlib:
@@ -101,7 +134,9 @@ function _thread_cache(mtcache::MultiThreadedCache, tid)
     else
         # We copy the base cache to all the thread caches, so that any precomputed values
         # can be shared without having to wait for a cache miss.
-        cache = copy(mtcache.base_cache)
+        cache = Base.@lock mtcache.base_cache_lock begin
+            copy(mtcache.base_cache)
+        end
         @inbounds mtcache.thread_caches[tid] = cache
     end
     return cache
@@ -117,7 +152,6 @@ function _thread_lock(cache::MultiThreadedCache, tid)
     end
     return lock
 end
-@noinline _thread_cache_length_assert() = @assert false "** Must call `init_cache!(cache)` in your Module's __init__()! - length(cache.thread_caches) < Threads.nthreads() "
 
 
 const CACHE_MISS = :__MultiThreadedCaches_key_not_found__
@@ -151,10 +185,10 @@ function Base.get!(func::Base.Callable, cache::MultiThreadedCache{K,V}, key) whe
         Base.@lock tlock begin
             if test_haskey
                 if !haskey(tcache, key)
-                    setindex!(tcache, key, v)
+                    tcache[key] = v
                 end
             else
-                setindex!(tcache, key, v)
+                tcache[key] = v
             end
         end
     end
