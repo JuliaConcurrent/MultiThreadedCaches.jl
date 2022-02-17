@@ -88,7 +88,15 @@ function init_cache!(cache::MultiThreadedCache{K,V}) where {K,V}
 end
 
 function Base.show(io::IO, cache::MultiThreadedCache{K,V}) where {K,V}
-    print(io, "$(MultiThreadedCache{K,V})(", cache.base_cache, ")")
+    # Contention optimization: don't hold the lock while printing, since that could block
+    # for an arbitrarily long time. Instead, copy the data out first.
+    # Note that this has the same CPU complexity, since printing is O(n) anyway, to print
+    # each kv pair.
+    data = Base.@lock cache.base_cache_lock begin
+        copy(cache.base_cache)
+    end
+    # Now print the data without holding the lock.
+    print(io, "$(MultiThreadedCache{K,V})(", data, ")")
 end
 
 # Based upon the thread-safe Global RNG implementation in the Random stdlib:
@@ -101,7 +109,9 @@ function _thread_cache(mtcache::MultiThreadedCache, tid)
     else
         # We copy the base cache to all the thread caches, so that any precomputed values
         # can be shared without having to wait for a cache miss.
-        cache = copy(mtcache.base_cache)
+        cache = Base.@lock mtcache.base_cache_lock begin
+            copy(mtcache.base_cache)
+        end
         @inbounds mtcache.thread_caches[tid] = cache
     end
     return cache
