@@ -27,7 +27,7 @@ Some other approaches to concurrent caches include:
       contention.
 
 
-# Example:
+## Example:
 ```julia
 julia> cache = MultiThreadedCache{Int, Int}(Dict(1=>2, 2=>3))
 MultiThreadedCache{Int64, Int64}(Dict(2 => 3, 1 => 2))
@@ -49,4 +49,31 @@ julia> get!(cache, 5) do
            5+10
        end
 6
+```
+
+## Performance
+Current benchmark results measuring scaling recorded against a baseline of a Dict() + ReentrantLock():
+
+```
+┌ Info: benchmark results
+│   Threads.nthreads() = 1
+│   time_serial = 0.03260747
+│   time_parallel = 0.152217246
+└   time_baseline = 0.131397639
+```
+
+```
+┌ Info: benchmark results
+│   Threads.nthreads() = 20
+│   time_serial = 0.030174521
+│   time_parallel = 0.307062643
+└   time_baseline = 1.239406026
+```
+
+```
+┌ Info: benchmark results
+│   Threads.nthreads() = 100
+│   time_serial = 0.030373533
+│   time_parallel = 1.771401144
+└   time_baseline = 5.397114559
 ```
