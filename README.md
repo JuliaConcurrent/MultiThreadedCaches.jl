@@ -18,6 +18,10 @@ you might use instead.
 ## Alternatives Considered
 Some other approaches to concurrent caches include:
 - Concurrent Hash Table
+    - The _theory_ in this package is to take advantage of the append-only aspect of a Cache
+    to get some contention benefits over a conventional multi-threaded dictionary, but we're
+    less sure in practice if this is actually true. (Once we had to make the adjustments to
+    account for task migration, the benefits of the current design became less clear...)
 - Multithread caches designed for low contention by sharding the **key space**, and keeping
   a separate lock per sub-cache. For example, having an array of e.g. 64 separate caches,
   sharded by a prefix of a key's hash, each with their own lock.
