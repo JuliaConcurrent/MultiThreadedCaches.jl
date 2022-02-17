@@ -121,6 +121,10 @@ end
     @test cache.base_cache == Dict(1=>10)
 end
 
+@testset "show" begin
+    cache = MultiThreadedCache{Int64, Int64}()
+    show(cache)
+end
 
 
 

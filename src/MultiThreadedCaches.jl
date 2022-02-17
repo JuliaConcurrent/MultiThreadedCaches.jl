@@ -89,14 +89,16 @@ end
 
 function Base.show(io::IO, cache::MultiThreadedCache{K,V}) where {K,V}
     # Contention optimization: don't hold the lock while printing, since that could block
-    # for an arbitrarily long time. Instead, copy the data out first.
-    # Note that this has the same CPU complexity, since printing is O(n) anyway, to print
-    # each kv pair.
-    data = Base.@lock cache.base_cache_lock begin
-        copy(cache.base_cache)
+    # for an arbitrarily long time. Instead, print the data to an intermediate buffer first.
+    # Note that this has the same CPU complexity, since printing is already O(n).
+    iobuf = IOBuffer()
+    Base.@lock cache.base_cache_lock begin
+        print(iobuf, "$(MultiThreadedCache{K,V})(", cache.base_cache, ")")
     end
     # Now print the data without holding the lock.
-    print(io, "$(MultiThreadedCache{K,V})(", data, ")")
+    seekstart(iobuf)
+    write(io, read(iobuf))
+    nothing
 end
 
 # Based upon the thread-safe Global RNG implementation in the Random stdlib:
@@ -127,7 +129,6 @@ function _thread_lock(cache::MultiThreadedCache, tid)
     end
     return lock
 end
-@noinline _thread_cache_length_assert() = @assert false "** Must call `init_cache!(cache)` in your Module's __init__()! - length(cache.thread_caches) < Threads.nthreads() "
 
 
 const CACHE_MISS = :__MultiThreadedCaches_key_not_found__
