@@ -185,10 +185,10 @@ function Base.get!(func::Base.Callable, cache::MultiThreadedCache{K,V}, key) whe
         Base.@lock tlock begin
             if test_haskey
                 if !haskey(tcache, key)
-                    setindex!(tcache, key, v)
+                    tcache[key] = v
                 end
             else
-                setindex!(tcache, key, v)
+                tcache[key] = v
             end
         end
     end
