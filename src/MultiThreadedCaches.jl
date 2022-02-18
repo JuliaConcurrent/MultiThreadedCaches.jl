@@ -87,43 +87,6 @@ function init_cache!(cache::MultiThreadedCache{K,V}) where {K,V}
     return cache
 end
 
-function Base.show(io::IO, cache::MultiThreadedCache{K,V}) where {K,V}
-    # Contention optimization: don't hold the lock while printing, since that could block
-    # for an arbitrarily long time. Instead, print the data to an intermediate buffer first.
-    # Note that this has the same CPU complexity, since printing is already O(n).
-    iobuf = IOBuffer()
-    let io = IOContext(iobuf, io)
-        Base.@lock cache.base_cache_lock begin
-            _oneline_show(io, cache)
-        end
-    end
-    # Now print the data without holding the lock.
-    seekstart(iobuf)
-    write(io, read(iobuf))
-    return nothing
-end
-_oneline_show(io::IO, cache::MultiThreadedCache{K,V}) where {K,V} =
-    print(io, "$(MultiThreadedCache{K,V})(", cache.base_cache, ")")
-
-function Base.show(io::IO, mime::MIME"text/plain", cache::MultiThreadedCache{K,V}) where {K,V}
-    # Contention optimization: don't hold the lock while printing. See above for more info.
-    iobuf = IOBuffer()
-    let io = IOContext(iobuf, io)
-        Base.@lock cache.base_cache_lock begin
-            if isempty(cache.base_cache)
-                _oneline_show(io, cache)
-            else
-                print(io, "$(MultiThreadedCache): ")
-                Base.show(io, mime, cache.base_cache)
-            end
-        end
-    end
-    # Now print the data without holding the lock.
-    seekstart(iobuf)
-    write(io, read(iobuf))
-    return nothing
-end
-
 # Based upon the thread-safe Global RNG implementation in the Random stdlib:
 # https://github.com/JuliaLang/julia/blob/e4fcdf5b04fd9751ce48b0afc700330475b42443/stdlib/Random/src/RNGs.jl#L369-L385
 # Get or lazily construct the per-thread cache when first requested.
@@ -262,5 +225,41 @@ function Base.get!(func::Base.Callable, cache::MultiThreadedCache{K,V}, key) whe
     end
 end
 
+function Base.show(io::IO, cache::MultiThreadedCache{K,V}) where {K,V}
+    # Contention optimization: don't hold the lock while printing, since that could block
+    # for an arbitrarily long time. Instead, print the data to an intermediate buffer first.
+    # Note that this has the same CPU complexity, since printing is already O(n).
+    iobuf = IOBuffer()
+    let io = IOContext(iobuf, io)
+        Base.@lock cache.base_cache_lock begin
+            _oneline_show(io, cache)
+        end
+    end
+    # Now print the data without holding the lock.
+    seekstart(iobuf)
+    write(io, read(iobuf))
+    return nothing
+end
+_oneline_show(io::IO, cache::MultiThreadedCache{K,V}) where {K,V} =
+    print(io, "$(MultiThreadedCache{K,V})(", cache.base_cache, ")")
+
+function Base.show(io::IO, mime::MIME"text/plain", cache::MultiThreadedCache{K,V}) where {K,V}
+    # Contention optimization: don't hold the lock while printing. See above for more info.
+    iobuf = IOBuffer()
+    let io = IOContext(iobuf, io)
+        Base.@lock cache.base_cache_lock begin
+            if isempty(cache.base_cache)
+                _oneline_show(io, cache)
+            else
+                print(io, "$(MultiThreadedCache): ")
+                Base.show(io, mime, cache.base_cache)
+            end
+        end
+    end
+    # Now print the data without holding the lock.
+    seekstart(iobuf)
+    write(io, read(iobuf))
+    return nothing
+end
 
 end # module
