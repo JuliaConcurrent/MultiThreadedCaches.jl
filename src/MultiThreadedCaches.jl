@@ -153,11 +153,11 @@ function Base.get!(func::Base.Callable, cache::MultiThreadedCache{K,V}, key) whe
             return value_or_miss::V
         end
         future_or_miss = get(cache.base_cache_futures, key, CACHE_MISS)
-        future::Channel{V} = if future_or_miss === CACHE_MISS
+        future = if future_or_miss === CACHE_MISS
             is_first_task = true
             ch = Channel{V}(1)
             cache.base_cache_futures[key] = ch
-            ch
+            ch::Channel{V}
         else
             future_or_miss::Channel{V}
         end
