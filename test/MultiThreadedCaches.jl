@@ -120,7 +120,8 @@ end
 
     # Test that all Tasks saw the same exception thrown.
     close(exceptions)
-    @test all_equal(collect(exceptions))
+    output = collect(exceptions)
+    @test all_equal(output)
 
     # Test that after throwing an exception during a get! function, the cache is still
     # robust and working as intended.

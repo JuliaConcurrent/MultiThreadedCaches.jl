@@ -137,24 +137,6 @@ function Base.get!(func::Base.Callable, cache::MultiThreadedCache{K,V}, key) whe
         end
     end
     # If not, we need to check the base cache.
-    # When we're done, call this function to set the result
-    @inline function _store_result!(v::V; test_haskey::Bool)
-        # Set the value into thread-local cache for the supplied key.
-        # Note that we must perform two separate get() and setindex!() calls, for
-        # concurrency-safety, in case the dict has been mutated by another task in between.
-        # TODO: For 100% concurrency-safety, we maybe want to lock around the get() above
-        # and the setindex!() here.. it's probably fine without it, but needs considering.
-        # Currently this is relying on get() and setindex!() having no yields.
-        Base.@lock tlock begin
-            if test_haskey
-                if !haskey(tcache, key)
-                    tcache[key] = v
-                end
-            else
-                tcache[key] = v
-            end
-        end
-    end
 
     # Even though we're using Thread-local caches, we still need to lock during
     # construction to prevent multiple tasks redundantly constructing the same object,
@@ -170,9 +152,14 @@ function Base.get!(func::Base.Callable, cache::MultiThreadedCache{K,V}, key) whe
         if value_or_miss !== CACHE_MISS
             return value_or_miss::V
         end
-        future = get!(cache.base_cache_futures, key) do
+        future_or_miss = get(cache.base_cache_futures, key, CACHE_MISS)
+        future::Channel{V} = if future_or_miss === CACHE_MISS
             is_first_task = true
-            Channel{V}(1)
+            ch = Channel{V}(1)
+            cache.base_cache_futures[key] = ch
+            ch
+        else
+            future_or_miss::Channel{V}
         end
     end
     if is_first_task
@@ -210,7 +197,7 @@ function Base.get!(func::Base.Callable, cache::MultiThreadedCache{K,V}, key) whe
             delete!(cache.base_cache_futures, key)
         end
         # Store the result in this thread-local dictionary.
-        _store_result!(v, test_haskey=false)
+        _store_result!(tcache, tlock, key, v, test_haskey=false)
         # Return v to any other Tasks that were blocking on this key.
         put!(future, v)
         return v
@@ -220,8 +207,26 @@ function Base.get!(func::Base.Callable, cache::MultiThreadedCache{K,V}, key) whe
         v = fetch(future)
         # Store the result in our original thread-local cache (if another Task hasn't) set
         # it already.
-        _store_result!(v, test_haskey=true)
+        _store_result!(tcache, tlock, key, v, test_haskey=true)
         return v
+    end
+end
+
+# Set the value into thread-local cache for the supplied key.
+@inline function _store_result!(tcache, tlock, key, v; test_haskey::Bool)
+    # Note that we must perform two separate get() and setindex!() calls, for
+    # concurrency-safety, in case the dict has been mutated by another task in between.
+    # TODO: For 100% concurrency-safety, we maybe want to lock around the get() above
+    # and the setindex!() here.. it's probably fine without it, but needs considering.
+    # Currently this is relying on get() and setindex!() having no yields.
+    Base.@lock tlock begin
+        if test_haskey
+            if !haskey(tcache, key)
+                tcache[key] = v
+            end
+        else
+            tcache[key] = v
+        end
     end
 end
 
