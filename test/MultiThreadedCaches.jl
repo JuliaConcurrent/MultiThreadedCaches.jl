@@ -120,7 +120,8 @@ end
 
     # Test that all Tasks saw the same exception thrown.
     close(exceptions)
-    @test all_equal(collect(exceptions))
+    output = collect(exceptions)
+    @test all_equal(output)
 
     # Test that after throwing an exception during a get! function, the cache is still
     # robust and working as intended.
@@ -142,6 +143,23 @@ end
     display(cache)
 end
 
+populate!(c,x) = get!(c, x) do
+    UInt64(2)
+end
+
+@testset "no allocations for cache-hit" begin
+    cache = MultiThreadedCache{Int64, Int64}()
+    init_cache!(cache)
+
+    # Populate the cache
+    populate!(cache, 10)
+
+    @test @allocated(populate!(cache, 10)) == 0
+    @test @allocated(populate!(cache, 10)) == 0
+
+    populate!(cache, 11)
+    @test @allocated(populate!(cache, 11)) == 0
+end
 
 
 
