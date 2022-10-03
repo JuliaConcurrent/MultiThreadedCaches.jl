@@ -119,7 +119,7 @@ end
 
 const CACHE_MISS = :__MultiThreadedCaches_key_not_found__
 
-function Base.get!(func::Base.Callable, cache::MultiThreadedCache{K,V}, key) where {K,V}
+function Base.get!(func, cache::MultiThreadedCache{K,V}, key) where {K,V}
     # If the thread-local cache has the value, we can return immediately.
     # We store tcache in a local variable, so that even if the Task migrates Threads, we are
     # still operating on the same initial cache object.
