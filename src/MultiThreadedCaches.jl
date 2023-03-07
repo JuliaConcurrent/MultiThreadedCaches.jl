@@ -82,8 +82,9 @@ function init_cache!(cache::MultiThreadedCache{K,V}) where {K,V}
     # Statically resize the vector, but wait to lazily create the dictionaries when
     # requested, so that the object will be allocated on the thread that will consume it.
     # (This follows the guidance from Julia Base.)
-    resize!(cache.thread_caches, Threads.nthreads())
-    resize!(cache.thread_locks, Threads.nthreads())
+    nt = isdefined(Base.Threads, :maxthreadid) ? Threads.maxthreadid() : Threads.nthreads()
+    resize!(cache.thread_caches, nt)
+    resize!(cache.thread_locks, nt)
     return cache
 end
 
