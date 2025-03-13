@@ -118,7 +118,8 @@ function _thread_lock(cache::MultiThreadedCache, tid)
 end
 
 
-const CACHE_MISS = :__MultiThreadedCaches_key_not_found__
+struct NeverCached end
+const CACHE_MISS = NeverCached()
 
 function Base.get!(func::Base.Callable, cache::MultiThreadedCache{K,V}, key) where {K,V}
     # If the thread-local cache has the value, we can return immediately.
