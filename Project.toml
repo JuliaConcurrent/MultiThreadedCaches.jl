@@ -1,7 +1,7 @@
 name = "MultiThreadedCaches"
 uuid = "18056a9e-ed0c-4ef3-9ad7-376a7fb08032"
 authors = ["Nathan Daly <nhdaly@gmail.com> and contributors"]
-version = "0.1.4"
+version = "0.1.5"
 
 [compat]
 julia = "1.3"
